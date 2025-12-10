@@ -652,9 +652,9 @@ class AutoPrintTool(QMainWindow):
             file_ext = Path(file_path).suffix.lower()
             
             if file_ext == '.pdf':
-                # Для PDF - используем Adobe ОДИН РАЗ для всех копий
+                # Для PDF - используем УЛУЧШЕННУЮ печать через Adobe
                 self.status_signal.emit(f"🚀 Starte Adobe-Druck für {copies} Kopie(n)...")
-                success = self.print_pdf_with_adobe_once(file_path, printer_name, copies)
+                success = self.print_pdf_adobe_simple(file_path, printer_name, copies)
                 
                 if not success:
                     # Резервный метод - Windows печать
@@ -678,8 +678,8 @@ class AutoPrintTool(QMainWindow):
         finally:
             self.printing_done_signal.emit()
     
-    def print_pdf_with_adobe_once(self, file_path, printer_name, copies):
-        """Печать PDF через Adobe ОДИН РАЗ для всех копий"""
+    def print_pdf_adobe_simple(self, file_path, printer_name, copies):
+        """ПРОСТОЙ и надежный метод печати через Adobe"""
         try:
             # Находим Adobe Reader
             adobe_path = self.find_adobe_reader()
@@ -688,107 +688,59 @@ class AutoPrintTool(QMainWindow):
             
             print(f"Adobe gefunden: {adobe_path}")
             
-            # 1. Закрываем все предыдущие Adobe
+            # Закрываем все предыдущие Adobe
             self.force_kill_adobe()
             time.sleep(0.5)
             
-            # 2. Создаем временный JavaScript файл для управления Adobe
-            temp_dir = tempfile.gettempdir()
-            js_file = os.path.join(temp_dir, f"adobe_print_{int(time.time())}.js")
+            # Используем параметры командной строки Adobe:
+            # /t <filename> <printername> - печатать и закрыть
+            # /p <filename> - печатать в портретном режиме (необязательно)
             
-            # Исправленная строка: используем raw string для пути
-            escaped_path = file_path.replace('\\', '\\\\')
+            base_cmd = f'"{adobe_path}" /t "{file_path}" "{printer_name}"'
+            print(f"Adobe Befehl: {base_cmd}")
             
-            # JavaScript для Adobe Reader
-            js_content = f"""
-            // JavaScript für Adobe Reader
-            // Druckt angegebene Anzahl Kopien
+            # Запускаем процессы печати
+            success_count = 0
             
-            try {{
-                // PDF öffnen
-                var doc = app.openDoc("{escaped_path}");
+            for i in range(copies):
+                if copies > 1 and i % 10 == 0:
+                    self.status_signal.emit(f"📤 Sende Kopie {i+1}/{copies}")
                 
-                if (doc != null) {{
-                    // Druckparameter einstellen
-                    var pp = doc.getPrintParams();
+                try:
+                    # Настройки для скрытого запуска
+                    startupinfo = subprocess.STARTUPINFO()
+                    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                    startupinfo.wShowWindow = subprocess.SW_HIDE
                     
-                    // Drucker
-                    pp.interactive = pp.constants.interactionLevel.silent;
-                    pp.printerName = "{printer_name}";
+                    # Запускаем Adobe для печати
+                    process = subprocess.Popen(
+                        base_cmd,
+                        shell=True,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        startupinfo=startupinfo,
+                        creationflags=subprocess.CREATE_NO_WINDOW
+                    )
                     
-                    // Anzahl Kopien
-                    pp.numCopies = {copies};
+                    success_count += 1
                     
-                    // Standard Druckereinstellungen verwenden
-                    pp.useDeviceFonts = true;
-                    pp.shrinkToFit = false;
+                    # Минимальная задержка между запусками
+                    time.sleep(0.5)
                     
-                    // Drucken
-                    doc.print(pp);
-                    
-                    // Dokument schließen
-                    doc.closeDoc();
-                }}
-                
-                // Adobe Reader beenden
-                app.execMenuItem("Quit");
-                
-            }} catch(e) {{
-                console.println("Fehler: " + e.toString());
-            }}
-            """
+                except Exception as e:
+                    print(f"Fehler bei Kopie {i+1}: {e}")
+                    continue
             
-            with open(js_file, 'w', encoding='utf-8') as f:
-                f.write(js_content)
-            
-            # 3. Запускаем Adobe Reader mit JavaScript
-            cmd = f'"{adobe_path}" "{file_path}" /s /h /t "{js_file}"'
-            
-            print(f"Adobe Befehl: {cmd}")
-            
-            # Prozess starten
-            startupinfo = subprocess.STARTUPINFO()
-            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-            startupinfo.wShowWindow = subprocess.SW_HIDE
-            
-            process = subprocess.Popen(
-                cmd,
-                shell=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                startupinfo=startupinfo,
-                creationflags=subprocess.CREATE_NO_WINDOW
-            )
-            
-            # 4. Warten auf Beendigung
-            timeout = 10 + min(copies * 2, 120)  # Maximal 130 Sekunden
-            start_time = time.time()
-            
-            while time.time() - start_time < timeout:
-                if process.poll() is not None:
-                    break
-                
-                # Status aktualisieren
-                elapsed = int(time.time() - start_time)
-                progress = min(100, int((elapsed / timeout) * 100))
-                self.status_signal.emit(f"🔄 Adobe verarbeitet... {progress}%")
-                time.sleep(1)
-            
-            # 5. Adobe erzwingen falls noch läuft
+            # Даем время на обработку
             time.sleep(2)
+            
+            # Закрываем Adobe
             self.force_kill_adobe()
             
-            # 6. Temporäre Datei löschen
-            try:
-                os.remove(js_file)
-            except:
-                pass
-            
-            return True
+            return success_count > 0
             
         except Exception as e:
             print(f"Adobe Druckfehler: {e}")
-            # Trotzdem Adobe schließen
             self.force_kill_adobe()
             return False
     
